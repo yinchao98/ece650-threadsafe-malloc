@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <pthread.h>
 #define BLOCKSIZE sizeof(block)
 
 // structure: linked list of free memory blocks
@@ -10,15 +11,10 @@ typedef struct block_t {
 
 block * headBlock = NULL;
 
-// first fit
-void * ff_malloc(size_t size);
-void ff_free(void * ptr);
+//Thread Safe malloc/free: locking version
+void *ts_malloc_lock(size_t size);
+void ts_free_lock(void * ptr);
 
-// best fit
-void * bf_malloc(size_t size);
-void bf_free(void * ptr);
-
-// get whole segment size and free space size
-unsigned long get_largest_free_data_segment_size();
-unsigned long get_total_free_size();
-
+//Thread Safe malloc/free: non-locking version 
+void *ts_malloc_nolock(size_t size);
+void ts_free_nolock(void *ptr);
