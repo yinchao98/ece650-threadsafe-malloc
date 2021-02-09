@@ -6,22 +6,6 @@
 #include <pthread.h>
 #include "my_malloc.h"
 
-pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
-
-// get new memory block
-void * getNewMemory(size_t size) {
-	// compare the size with pagesize
-	void * new = sbrk(size + BLOCKSIZE);
-	// sbrk failed
-	if(new == (void*) - 1) {
-		return NULL;
-	}
-	block * newBlock = new;
-	newBlock->size = size;
-	newBlock->next = NULL;
-	return (void*)(newBlock + 1);
-}
-
 // split the old block and return the new block
 block * splitBlock(block* oldBlock, size_t size) {
 	block * newBlock = (block*)((char*)oldBlock + BLOCKSIZE + size);
@@ -85,6 +69,21 @@ void tryMerge(block * prev, block * middle, block * post) {
 /* 
 	Thread Safe malloc/free: locking version
 */
+
+// get new memory block
+block * getNewMemory(size_t size) {
+	// compare the size with pagesize
+	void * new = sbrk(size + BLOCKSIZE);
+	// sbrk failed
+	if(new == (void*) - 1) {
+		return NULL;
+	}
+	block * newBlock = new;
+	newBlock->size = size;
+	newBlock->next = NULL;
+	return newBlock;
+}
+
 void *ts_malloc_lock(size_t size) {
 	pthread_mutex_lock(&lock);
 	// size cannot be 0, return NULL
@@ -94,13 +93,13 @@ void *ts_malloc_lock(size_t size) {
 	}
 	// no free memory blocks, request for new memory block
 	if(headBlock == NULL) {
-		void * newBlock = getNewMemory(size);
+		block * newBlock = getNewMemory(size);
 		if (newBlock == NULL) {
 			pthread_mutex_unlock(&lock);
 			return NULL;
 		}
 		pthread_mutex_unlock(&lock);
-		return newBlock;
+		return (void*)(newBlock + 1);
 	}
 	// have memory blocks, look for the best fit block
 	size_t bestSize = SIZE_MAX;
@@ -131,8 +130,13 @@ void *ts_malloc_lock(size_t size) {
 	}
 	// if no block has enough space
 	if(bestBlock == NULL) {
+		block * newBlock = getNewMemory(size);
+		if (newBlock == NULL) {
+			pthread_mutex_unlock(&lock);
+			return NULL;
+		}
 		pthread_mutex_unlock(&lock);
-		return getNewMemory(size);
+		return (void*)(newBlock + 1);
 	}
 	trySplit(bestPrev, bestBlock, size);
 	pthread_mutex_unlock(&lock);
@@ -176,14 +180,36 @@ void ts_free_lock(void * ptr) {
 /*
 	Thread Safe malloc/free: non-locking version 
 */
+
+// get new memory block
+block * tlsGetNewMemory(size_t size) {
+	// compare the size with pagesize
+	pthread_mutex_lock(&lock);
+	void * new = sbrk(size + BLOCKSIZE);
+	// sbrk failed
+	if(new == (void*) - 1) {
+		pthread_mutex_unlock(&lock);
+		return NULL;
+	}
+	block * newBlock = new;
+	newBlock->size = size;
+	newBlock->next = NULL;
+	pthread_mutex_unlock(&lock);
+	return newBlock;
+}
+
 void *ts_malloc_nolock(size_t size) {
 	// size cannot be 0, return NULL
 	if(size == 0) {
 		return NULL;
 	}
 	// no free memory blocks, request for new memory block
-	if(headBlock == NULL) {
-		return getNewMemory(size);
+	if(tlsHeadBlock == NULL) {
+		block * newBlock = tlsGetNewMemory(size);
+		if (newBlock == NULL) {
+			return NULL;
+		}
+		return (void*)(newBlock + 1);
 	}
 	// have memory blocks, look for the best fit block
 	size_t bestSize = SIZE_MAX;
@@ -191,13 +217,13 @@ void *ts_malloc_nolock(size_t size) {
 	block * bestPrev = NULL;
 	// use two pointers to track
 	block * prevBlock = NULL;
-	block * curBlock = headBlock;
+	block * curBlock = tlsHeadBlock;
 	while(curBlock != NULL) {
 		int remainSize = curBlock->size - size;
 		if(remainSize == 0) {
 			// current block is head block
 			if(prevBlock == NULL) {
-				headBlock = curBlock -> next;
+				tlsHeadBlock = curBlock -> next;
 			} else {
 				prevBlock -> next = curBlock -> next;
 			}
@@ -213,7 +239,11 @@ void *ts_malloc_nolock(size_t size) {
 	}
 	// if no block has enough space
 	if(bestBlock == NULL) {
-		return getNewMemory(size);
+		block * newBlock = tlsGetNewMemory(size);
+		if (newBlock == NULL) {
+			return NULL;
+		}
+		return (void*)(newBlock + 1);
 	}
 	trySplit(bestPrev, bestBlock, size);
   	return (void*)(bestBlock + 1);
@@ -224,20 +254,20 @@ void ts_free_nolock(void *ptr) {
 		return;
 	}
 	block * ptrBlock = (block*)((char*)ptr - BLOCKSIZE);
-	if(headBlock == NULL) {
+	if(tlsHeadBlock == NULL) {
 		ptrBlock->next = NULL;
-		headBlock = ptrBlock;
+		tlsHeadBlock = ptrBlock;
 		return;
 	}
 	// if the block should be inserted in the head
-	if(ptrBlock < headBlock) {
-		ptrBlock->next = headBlock;
-		tryMerge(NULL, ptrBlock, headBlock);
-		headBlock = ptrBlock;
+	if(ptrBlock < tlsHeadBlock) {
+		ptrBlock->next = tlsHeadBlock;
+		tryMerge(NULL, ptrBlock, tlsHeadBlock);
+		tlsHeadBlock = ptrBlock;
 		return;
 	}
 	// if the block should be inserted after the head
-	block * curr = headBlock;
+	block * curr = tlsHeadBlock;
 	while(curr->next != NULL && ptrBlock > curr->next) {
 		curr = curr->next;
 	}

@@ -9,7 +9,14 @@ typedef struct block_t {
 	struct block_t * next; // pointer to next free memory block
 } block;
 
+// lock version headBlock
 block * headBlock = NULL;
+
+// no lock version headBlock
+__thread block * tlsHeadBlock = NULL;
+
+// initialize the lock
+pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 
 //Thread Safe malloc/free: locking version
 void *ts_malloc_lock(size_t size);
